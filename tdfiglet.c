@@ -24,12 +24,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sysexits.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <sys/mman.h>
 #include <sys/queue.h>
 #include <sys/stat.h>
-#include <sys/time.h>
 #include <sys/types.h>
 
 #ifdef DEBUG
@@ -72,6 +72,8 @@
 typedef struct opt_s {
 	uint8_t justify;
 	uint8_t width;
+	uint8_t wspc;
+	uint8_t lspc;
 	uint8_t color;
 	uint8_t encoding;
 	bool random;
@@ -99,6 +101,7 @@ typedef struct font_s {
 	uint8_t *data;
 	glyph_t *glyphs[NUM_CHARS];
 	uint8_t height;
+	glyph_t *space;
 } font_t;
 
 struct dirname_s {
@@ -107,7 +110,7 @@ struct dirname_s {
 };
 
 const char *charlist = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNO"
-		       "PQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+		       "PQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ ";
 
 opt_t opt;
 
@@ -123,6 +126,7 @@ void printcell(char *utfchar, uint8_t color);
 void printrow(const glyph_t *glyph, int row);
 void printstr(const char *str, font_t *font);
 
+
 void
 usage(void)
 {
@@ -131,6 +135,8 @@ usage(void)
 	fprintf(stderr, "    -f [font] Specify font file used.\n");
 	fprintf(stderr, "    -j l|r|c  Justify left, right, or center.  Default is left.\n");
 	fprintf(stderr, "    -w n      Set screen width.  Default is 80.\n");
+	fprintf(stderr, "    -W n      Width of space character.  Default is 4.\n");
+	fprintf(stderr, "    -L n      Line spacing.  Default is 1.\n");
 	fprintf(stderr, "    -c a|m    Color format ANSI or mirc.  Default is ANSI.\n");
 	fprintf(stderr, "    -e u|a    Encode as unicode or ASCII.  Default is unicode.\n");
 	fprintf(stderr, "    -i        Print font details.\n");
@@ -148,12 +154,12 @@ main(int argc, char *argv[])
 
 	opt.justify = LEFT_JUSTIFY;
 	opt.width = 80;
+	opt.wspc = 4;
+	opt.lspc = 1;
 	opt.info = false;
 	opt.encoding = ENC_UNICODE;
 	opt.random = false;
 	char *fontfile = NULL;
-
-	struct timeval tv;
 
 	DIR *d;
 	struct dirent *dir;
@@ -164,13 +170,19 @@ main(int argc, char *argv[])
 	int r = 0;
 	int dll = 0;
 
-	while((o = getopt(argc, argv, "f:w:j:c:e:ir")) != -1) {
+	while((o = getopt(argc, argv, "f:w:W:L:j:c:e:ir")) != -1) {
 		switch (o) {
 			case 'f':
 				fontfile = optarg;
 				break;
 			case 'w':
 				opt.width = atoi(optarg);
+				break;
+			case 'W':
+				opt.wspc = atoi(optarg);
+				break;
+			case 'L':
+				opt.lspc = atoi(optarg);
 				break;
 			case 'j':
 				switch (optarg[0]) {
@@ -253,9 +265,7 @@ main(int argc, char *argv[])
 			}
 			closedir(d);
 
-			gettimeofday(&tv, NULL);
-
-			srand(tv.tv_usec);
+			srand(time(NULL) + getpid());
 			r = dll ? rand() % dll : 0;
 
 			dp = SLIST_FIRST(&head);
@@ -273,11 +283,11 @@ main(int argc, char *argv[])
 
 	font = loadfont(fontfile);
 
-	printf("\n");
+	if (opt.lspc) printf("\n");
 
 	for (int i = 0; i < argc; i++) {
 		printstr(argv[i], font);
-		printf("\n");
+		for (int i = 0; i < opt.lspc; i++) printf("\n");
 	}
 
 	return(0);
@@ -358,6 +368,7 @@ font_t
 	font->charlist = (uint16_t *)&map[45];
 	font->data = &map[233];
 	font->height = 0;
+	font->space = calloc(1, sizeof(glyph_t));
 
 	if (strncmp(magic, (const char *)map, strlen(magic)) || font->fonttype != COLOR_FNT) {
 		fprintf(stderr, "Invalid font file: %s\n", fn);
@@ -411,6 +422,7 @@ font_t
 			font->glyphs[i] = NULL;
 		}
 	}
+	readchar(NUM_CHARS, font->space, font);
 
 	return font;
 }
@@ -418,20 +430,25 @@ font_t
 void
 readchar(int i, glyph_t *glyph, font_t *font)
 {
-	if (font->charlist[i] == 0xffff) {
+	uint8_t *p;
+	uint8_t color;
+
+	if (i != NUM_CHARS && font->charlist[i] == 0xffff) {
 		printf("char not found\n");
 		return;
 	}
 
-	uint8_t *p = font->data + font->charlist[i];
-
-	uint8_t ch;
-	uint8_t color;
+if (i == NUM_CHARS) {
+	glyph->width = opt.wspc;
+	glyph->height = font->height;
+} else {
+	p = font->data + font->charlist[i];
 
 	glyph->width = *p;
 	p++;
 	glyph->height = *p;
 	p++;
+}
 
 	int row = 0;
 	int col = 0;
@@ -453,11 +470,11 @@ readchar(int i, glyph_t *glyph, font_t *font)
 		glyph->cell[i].color = 0;
 	}
 
+if (i != NUM_CHARS) {
 	while (*p) {
 
-		ch = *p;
+		uint8_t ch = *p;
 		p++;
-
 
 		if (ch == '\r') {
 			ch = ' ';
@@ -488,10 +505,12 @@ readchar(int i, glyph_t *glyph, font_t *font)
 		}
 	}
 }
+}
 
 int
 lookupchar(char c, const font_t *font)
 {
+	if (c == ' ') return NUM_CHARS;
 	for (int i = 0; i < NUM_CHARS; i++) {
 		if (charlist[i] == c && font->charlist[i] != 0xffff)
 			return i;
@@ -587,9 +606,13 @@ printstr(const char *str, font_t *font)
 			continue;
 		}
 
-		g = font->glyphs[n];
+		if (n == NUM_CHARS) {
+			g = font->space;
+		} else {
+			g = font->glyphs[n];
+		}
 
-		if (g->height > maxheight) {
+		if (n != NUM_CHARS && g->height > maxheight) {
 			maxheight = g->height;
 		}
 
@@ -598,6 +621,7 @@ printstr(const char *str, font_t *font)
 			linewidth += font->spacing;
 		}
 	}
+	font->space->height = maxheight;
 
 	if (opt.justify == CENTER_JUSTIFY) {
 		padding = (opt.width - linewidth) / 2;
@@ -617,7 +641,12 @@ printstr(const char *str, font_t *font)
 				continue;
 			}
 
-			glyph_t *g = font->glyphs[n];
+			glyph_t *g;
+			if (n == NUM_CHARS) {
+				g = font->space;
+			} else {
+				g = font->glyphs[n];
+			}
 			printrow(g, i);
 
 			if (opt.color == COLOR_ANSI) {
